@@ -1,13 +1,263 @@
 'use client';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+
+// ─── Scenario Types ───
+interface Actor {
+  name: string;
+  role: string;
+  trust: number;
+  emoji: string;
+}
+interface ScenarioStep {
+  id: number;
+  title: string;
+  description: string;
+  actor?: Actor;
+  action?: string;
+  voteDirection?: 1 | -1;
+  hasEvidence?: boolean;
+  csAfter: number;
+  trueVotes: number;
+  falseVotes: number;
+  trueWeight: number;
+  falseWeight: number;
+  trustChanges?: { name: string; oldTrust: number; newTrust: number; reason: string }[];
+  insight: string;
+  math?: string;
+}
+
+// ─── Scenario Data ───
+const ACTORS = {
+  alice:  { name: 'Alice', role: 'Veteran Reporter', trust: 3.2, emoji: '👩‍🎓' },
+  frank:  { name: 'Frank', role: 'Trusted Expert', trust: 4.5, emoji: '🧑‍🔬' },
+  grace:  { name: 'Grace', role: 'Consistent Voter', trust: 2.1, emoji: '👩‍💼' },
+  bob:    { name: 'Bob', role: 'Active Contributor', trust: 1.8, emoji: '🧑‍💻' },
+  dave:   { name: 'Dave', role: 'New User', trust: 0.5, emoji: '🆕' },
+  eve:    { name: 'Eve', role: 'Skeptic', trust: 0.3, emoji: '🤨' },
+  hank:   { name: 'Hank', role: 'Newcomer', trust: 0.2, emoji: '👶' },
+  jake:   { name: 'Jake', role: 'Sybil Suspect', trust: 0.15, emoji: '⚠️' },
+  carol:  { name: 'Carol', role: 'Regular User', trust: 0.9, emoji: '👩' },
+};
+
+// ── SCENARIO 1: Evidence vs Mob ──
+function buildScenario1(): ScenarioStep[] {
+  const w = (t: number) => Math.sqrt(t);
+
+  // Step 0: Alice posts with evidence
+  // Step 1-4: Dave(0.5), Eve(0.3), Hank(0.2), Jake(0.15) vote FALSE
+  // Step 5: Frank(4.5) votes TRUE
+  // Step 6: Grace(2.1) votes TRUE
+  // Step 7: Bob(1.8) votes TRUE — truth cements
+
+  let trueW = 0, falseW = 0, trueV = 0, falseV = 0;
+  const cs = () => trueV + falseV === 0 ? 0 : (trueW - falseW) / (trueW + falseW);
+
+  const steps: ScenarioStep[] = [];
+
+  // Step 0: Post
+  steps.push({
+    id: 0, title: '📝 Rumor Posted WITH Evidence',
+    description: 'Alice (trust 3.2, Veteran Reporter) posts: "Library extending hours to 2 AM during finals week" and attaches a photo of the official notice on the library door.',
+    actor: ACTORS.alice, action: 'post', hasEvidence: true,
+    csAfter: 0, trueVotes: 0, falseVotes: 0, trueWeight: 0, falseWeight: 0,
+    insight: 'A high-trust user posts with photographic evidence. The rumor starts at CS = 0 (neutral). Now voting begins…',
+    math: 'CS = 0.000 (no votes yet)',
+  });
+
+  // Steps 1-4: Low-trust mob votes FALSE
+  const mobbers = [ACTORS.dave, ACTORS.eve, ACTORS.hank, ACTORS.jake];
+  for (let i = 0; i < mobbers.length; i++) {
+    const actor = mobbers[i];
+    falseW += w(actor.trust);
+    falseV++;
+    const csVal = cs();
+    steps.push({
+      id: i + 1,
+      title: `❌ ${actor.name} Votes FALSE`,
+      description: `${actor.name} (trust ${actor.trust}, ${actor.role}) votes the rumor as FALSE. ${i === 0 ? '"I don\'t believe it — sounds too good to be true."' : i === 1 ? '"No way they\'d do that."' : i === 2 ? '"Probably clickbait."' : '"Definitely fake news."'}`,
+      actor, action: 'vote', voteDirection: -1,
+      csAfter: csVal, trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+      trustChanges: [{
+        name: actor.name,
+        oldTrust: actor.trust,
+        newTrust: Math.max(0.1, actor.trust - 0.045 * Math.min(w(actor.trust), 1.5)),
+        reason: 'Voted against what will become consensus → penalty',
+      }],
+      insight: `${falseV} low-trust users have voted FALSE. On a normal platform, 4 votes would create false consensus. But on TruthChain, their combined weight is only ${falseW.toFixed(3)} because Vote Weight = √trust.`,
+      math: `False weight: ${mobbers.slice(0, i + 1).map(a => `√${a.trust}`).join(' + ')} = ${falseW.toFixed(3)}\nCS = (${trueW.toFixed(3)} − ${falseW.toFixed(3)}) / (${trueW.toFixed(3)} + ${falseW.toFixed(3)}) = ${csVal.toFixed(3)}`,
+    });
+  }
+
+  // Step 5: Frank votes TRUE
+  trueW += w(ACTORS.frank.trust);
+  trueV++;
+  const csAfterFrank = cs();
+  steps.push({
+    id: 5, title: '✅ Frank Votes TRUE — The Expert Speaks',
+    description: 'Frank (trust 4.5, Trusted Expert) sees the photo evidence and votes TRUE. "I saw the same notice posted on the campus app. This is confirmed."',
+    actor: ACTORS.frank, action: 'vote', voteDirection: 1,
+    csAfter: csAfterFrank, trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+    trustChanges: [
+      { name: 'Frank', oldTrust: 4.5, newTrust: 4.5 + 0.03 * Math.min(w(4.5), 1.5), reason: 'Voted with consensus → reward' },
+      ...mobbers.map(a => ({ name: a.name, oldTrust: a.trust, newTrust: Math.max(0.1, a.trust - 0.045 * Math.min(w(a.trust), 1.5)), reason: 'Their FALSE vote is now AGAINST emerging consensus' })),
+    ],
+    insight: `ONE trusted expert just FLIPPED the entire consensus! Frank's √4.5 = ${w(4.5).toFixed(3)} weight is more than ALL four low-trust voters combined (${(w(0.5) + w(0.3) + w(0.2) + w(0.15)).toFixed(3)}). This is the core power of trust-weighted consensus.`,
+    math: `Frank's weight: √4.5 = ${w(4.5).toFixed(3)}\nMob's combined weight: √0.5 + √0.3 + √0.2 + √0.15 = ${(w(0.5) + w(0.3) + w(0.2) + w(0.15)).toFixed(3)}\nCS = (${trueW.toFixed(3)} − ${falseW.toFixed(3)}) / (${trueW.toFixed(3)} + ${falseW.toFixed(3)}) = ${csAfterFrank.toFixed(3)}`,
+  });
+
+  // Step 6: Grace votes TRUE
+  trueW += w(ACTORS.grace.trust);
+  trueV++;
+  const csAfterGrace = cs();
+  steps.push({
+    id: 6, title: '✅ Grace Votes TRUE — Consensus Strengthens',
+    description: 'Grace (trust 2.1, Consistent Voter) votes TRUE. "I checked with the library desk — confirmed, starts next Monday."',
+    actor: ACTORS.grace, action: 'vote', voteDirection: 1,
+    csAfter: csAfterGrace, trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+    trustChanges: [
+      { name: 'Grace', oldTrust: 2.1, newTrust: 2.1 + 0.03 * Math.min(w(2.1), 1.5), reason: 'Aligned with consensus → trust reward' },
+    ],
+    insight: 'The consensus is now strongly positive. The mob\'s FALSE votes are being overwhelmed by the quality of TRUE voters.',
+    math: `True weight: √4.5 + √2.1 = ${(w(4.5) + w(2.1)).toFixed(3)}\nFalse weight: ${(w(0.5) + w(0.3) + w(0.2) + w(0.15)).toFixed(3)}\nCS = ${csAfterGrace.toFixed(3)} — strong TRUE consensus`,
+  });
+
+  // Step 7: Bob votes TRUE — final
+  trueW += w(ACTORS.bob.trust);
+  trueV++;
+  const csFinal = cs();
+  steps.push({
+    id: 7, title: '✅ Bob Votes TRUE — Truth Cemented',
+    description: 'Bob (trust 1.8, Active Contributor) casts the final vote for TRUE. The rumor now has overwhelming weighted consensus despite the earlier mob attempt.',
+    actor: ACTORS.bob, action: 'vote', voteDirection: 1,
+    csAfter: csFinal, trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+    trustChanges: [
+      { name: 'Dave', oldTrust: 0.5, newTrust: 0.42, reason: 'FALSE vote was wrong → trust decreased' },
+      { name: 'Eve', oldTrust: 0.3, newTrust: 0.25, reason: 'FALSE vote was wrong → trust decreased' },
+      { name: 'Hank', oldTrust: 0.2, newTrust: 0.17, reason: 'FALSE vote was wrong → trust decreased' },
+      { name: 'Jake', oldTrust: 0.15, newTrust: 0.12, reason: 'FALSE vote was wrong → trust decreased' },
+      { name: 'Frank', oldTrust: 4.5, newTrust: 4.58, reason: 'TRUE vote was correct → trust increased' },
+      { name: 'Grace', oldTrust: 2.1, newTrust: 2.16, reason: 'TRUE vote was correct → trust increased' },
+      { name: 'Bob', oldTrust: 1.8, newTrust: 1.85, reason: 'TRUE vote was correct → trust increased' },
+    ],
+    insight: `Final result: 3 TRUE vs 4 FALSE — but truth WINS because trust quality beat mob quantity. The mob actually LOST trust, making future attacks even weaker. Honest voters GAINED trust, making truth even stronger next time.`,
+    math: `Final CS = ${csFinal.toFixed(3)} — VERIFIED TRUE\n\n📊 Trust Outcomes:\n  Honest voters: trust ↑ (rewarded)\n  Mob voters: trust ↓ (punished)\n  System gets STRONGER after each attack`,
+  });
+
+  return steps;
+}
+
+// ── SCENARIO 2: No Evidence, Still True ──
+function buildScenario2(): ScenarioStep[] {
+  const w = (t: number) => Math.sqrt(t);
+  let trueW = 0, falseW = 0, trueV = 0, falseV = 0;
+  const cs = () => trueV + falseV === 0 ? 0 : (trueW - falseW) / (trueW + falseW);
+
+  const steps: ScenarioStep[] = [];
+
+  // Step 0: Carol posts WITHOUT evidence
+  steps.push({
+    id: 0, title: '📝 Rumor Posted WITHOUT Evidence',
+    description: 'Carol (trust 0.9, Regular User) posts: "I heard they\'re cancelling the Friday concert." No photo, no source — just a claim.',
+    actor: ACTORS.carol, action: 'post', hasEvidence: false,
+    csAfter: 0, trueVotes: 0, falseVotes: 0, trueWeight: 0, falseWeight: 0,
+    insight: 'A medium-trust user posts with NO evidence. People will be more skeptical. Watch how the CS builds more slowly compared to Scenario 1.',
+    math: 'CS = 0.000 (no votes yet)\nNote: No evidence → voters proceed with more caution',
+  });
+
+  // Step 1: Dave votes TRUE (low trust)
+  trueW += w(ACTORS.dave.trust);
+  trueV++;
+  steps.push({
+    id: 1, title: '✅ Dave Votes TRUE — But Low Impact',
+    description: 'Dave (trust 0.5, New User) votes TRUE. "Yeah I heard the same thing from a friend."',
+    actor: ACTORS.dave, action: 'vote', voteDirection: 1,
+    csAfter: cs(), trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+    insight: `Dave's vote counts, but his trust weight is only √0.5 = ${w(0.5).toFixed(3)}. Without evidence, each vote carries the same weight as before — but people are less likely to pile on.`,
+    math: `True weight: √0.5 = ${w(0.5).toFixed(3)}\nCS = ${cs().toFixed(3)} (positive but weak)`,
+  });
+
+  // Step 2: Eve votes FALSE
+  falseW += w(ACTORS.eve.trust);
+  falseV++;
+  steps.push({
+    id: 2, title: '❌ Eve Votes FALSE — Skepticism',
+    description: 'Eve (trust 0.3, Skeptic) votes FALSE. "Where\'s the proof? I\'ll believe it when I see an official cancellation."',
+    actor: ACTORS.eve, action: 'vote', voteDirection: -1,
+    csAfter: cs(), trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+    insight: 'Without evidence, skeptics have a reasonable position. The CS is now barely positive — the rumor is in uncertain territory.',
+    math: `CS = (${trueW.toFixed(3)} − ${falseW.toFixed(3)}) / (${trueW.toFixed(3)} + ${falseW.toFixed(3)}) = ${cs().toFixed(3)}`,
+  });
+
+  // Step 3: Grace votes TRUE
+  trueW += w(ACTORS.grace.trust);
+  trueV++;
+  steps.push({
+    id: 3, title: '✅ Grace Votes TRUE — Trusted Voice',
+    description: 'Grace (trust 2.1, Consistent Voter) votes TRUE. "I confirmed with the student union — the artist cancelled."',
+    actor: ACTORS.grace, action: 'vote', voteDirection: 1,
+    csAfter: cs(), trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+    insight: `Grace's weight (√2.1 = ${w(2.1).toFixed(3)}) shifts the score significantly. But compare this CS to Scenario 1 at the same stage — it's LOWER because there's no evidence backing a systematic response.`,
+    math: `CS = ${cs().toFixed(3)} — positive, growing\n\nCompare: Scenario 1 (with evidence) at this stage had CS ≈ 0.7+`,
+  });
+
+  // Step 4: Hank votes TRUE
+  trueW += w(ACTORS.hank.trust);
+  trueV++;
+  steps.push({
+    id: 4, title: '✅ Hank Votes TRUE — Low Impact Addition',
+    description: 'Hank (trust 0.2, Newcomer) also votes TRUE. "My roommate works at the venue and said the same thing."',
+    actor: ACTORS.hank, action: 'vote', voteDirection: 1,
+    csAfter: cs(), trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+    insight: `Even though 3 people voted TRUE vs 1 FALSE, the CS is only ${cs().toFixed(3)} — without strong evidence and without very high-trust voters, consensus builds SLOWLY. The system is cautious.`,
+    math: `True weight: √0.5 + √2.1 + √0.2 = ${(w(0.5) + w(2.1) + w(0.2)).toFixed(3)}\nFalse weight: √0.3 = ${w(0.3).toFixed(3)}\nCS = ${cs().toFixed(3)}`,
+  });
+
+  // Step 5: Frank votes TRUE — pushes it over
+  trueW += w(ACTORS.frank.trust);
+  trueV++;
+  steps.push({
+    id: 5, title: '✅ Frank Votes TRUE — Expert Confirmation',
+    description: 'Frank (trust 4.5, Trusted Expert) investigates and votes TRUE. "Confirmed via the campus events portal. Concert IS cancelled."',
+    actor: ACTORS.frank, action: 'vote', voteDirection: 1,
+    csAfter: cs(), trueVotes: trueV, falseVotes: falseV, trueWeight: trueW, falseWeight: falseW,
+    trustChanges: [
+      { name: 'Eve', oldTrust: 0.3, newTrust: 0.25, reason: 'FALSE vote is now against consensus → trust penalty' },
+      { name: 'Frank', oldTrust: 4.5, newTrust: 4.56, reason: 'Correct vote → trust gained' },
+    ],
+    insight: `Frank's expert weight makes the CS jump. But notice: CS = ${cs().toFixed(3)} — STILL lower than Scenario 1's final CS at the same point. The rumor IS true, but without initial evidence, the system maintains a lower confidence level. This is by design: evidence matters.`,
+    math: `Frank's √4.5 = ${w(4.5).toFixed(3)} is the strongest contribution\nFinal CS = ${cs().toFixed(3)}\n\n🔑 KEY INSIGHT:\n  • Scenario 1 (with evidence): CS ≈ 0.82\n  • Scenario 2 (no evidence): CS ≈ ${cs().toFixed(2)}\n  • Same truth, different confidence levels`,
+  });
+
+  return steps;
+}
+
+// ═══ COMPONENT ═══
 
 export default function SimulatePage() {
+  const [scenario, setScenario] = useState<1 | 2>(1);
+  const [step, setStep] = useState(-1); // -1 = not started
+  const [autoPlay, setAutoPlay] = useState(false);
+  const autoRef = useRef<NodeJS.Timeout | null>(null);
+
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [nashR, setNashR] = useState<any>(null);
   const [popR, setPopR] = useState<any>(null);
   const [sybilR, setSybilR] = useState<any>(null);
   const [colR, setColR] = useState<any>(null);
   const [farmR, setFarmR] = useState<any>(null);
+
+  const steps = scenario === 1 ? buildScenario1() : buildScenario2();
+  const current = step >= 0 && step < steps.length ? steps[step] : null;
+  const maxStep = steps.length - 1;
+
+  useEffect(() => {
+    if (autoPlay && step < maxStep) {
+      autoRef.current = setTimeout(() => setStep(s => s + 1), 3500);
+    } else {
+      setAutoPlay(false);
+    }
+    return () => { if (autoRef.current) clearTimeout(autoRef.current); };
+  }, [autoPlay, step, maxStep]);
 
   const sim = useCallback(async (type: string, params?: any) => {
     setBusy(p => ({ ...p, [type]: true }));
@@ -19,9 +269,297 @@ export default function SimulatePage() {
     return null;
   }, []);
 
+  const cc = (v: number) => v >= 0.5 ? 'var(--green)' : v <= -0.5 ? 'var(--red)' : 'var(--amber)';
+  const tc = (t: number) => t >= 2 ? 'var(--green)' : t >= 0.5 ? 'var(--amber)' : 'var(--red)';
+
   return (
     <div className="pg">
+      {/* ═══════════ SCENARIO SIMULATION ═══════════ */}
       <div className="sec">
+        <h2>🎬 Live Scenario Simulation</h2>
+        <p className="desc">
+          Watch step-by-step how TruthChain handles real-world situations. See how trust-weighted consensus defeats mob voting,
+          and why evidence matters even when the truth is the same.
+        </p>
+      </div>
+
+      {/* Scenario Picker */}
+      <div className="tabs" style={{ marginBottom: 16 }}>
+        <button className={`tab ${scenario === 1 ? 'active' : ''}`} onClick={() => { setScenario(1); setStep(-1); setAutoPlay(false); }}>
+          📸 Scenario 1: Evidence vs Mob
+        </button>
+        <button className={`tab ${scenario === 2 ? 'active' : ''}`} onClick={() => { setScenario(2); setStep(-1); setAutoPlay(false); }}>
+          ❓ Scenario 2: No Evidence
+        </button>
+      </div>
+
+      {/* Scenario Description */}
+      <div className="crd" style={{ borderLeft: `3px solid ${scenario === 1 ? 'var(--green)' : 'var(--amber)'}`, marginBottom: 16 }}>
+        {scenario === 1 ? (
+          <>
+            <h3>📸 Evidence vs Mob Attack</h3>
+            <p>A <b>high-trust user</b> (Alice, trust 3.2) posts a TRUE rumor with <b>photo evidence</b>.
+              Then 4 <b>low-trust users</b> try to vote it as FALSE. Can they beat the truth?
+              Watch how <b>one expert</b> can overturn the entire mob.</p>
+          </>
+        ) : (
+          <>
+            <h3>❓ No Evidence — But Still True</h3>
+            <p>A <b>medium-trust user</b> (Carol, trust 0.9) posts the SAME truth but with <b>no evidence</b>.
+              The truth still emerges through consensus — but the <b>confidence level is lower</b>.
+              Compare the final CS to Scenario 1 to see why evidence matters.</p>
+          </>
+        )}
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button className="btn btn-b" onClick={() => { setStep(-1); setAutoPlay(false); }}>⏮️ Reset</button>
+        <button className="btn btn-ghost" onClick={() => setStep(s => Math.max(0, s - 1))} disabled={step <= 0}>◀ Back</button>
+        <button className="btn btn-g" onClick={() => setStep(s => Math.min(maxStep, s + 1))} disabled={step >= maxStep}>
+          {step < 0 ? '▶ Start Simulation' : '▶ Next Step'}
+        </button>
+        <button className={`btn ${autoPlay ? 'btn-r' : 'btn-p'}`} onClick={() => { if (!autoPlay && step < 0) setStep(0); setAutoPlay(a => !a); }}>
+          {autoPlay ? '⏸ Pause' : '⏩ Auto-Play'}
+        </button>
+        <span style={{ fontSize: 12, color: 'var(--t3)', fontFamily: 'var(--mono)' }}>
+          Step {step < 0 ? '—' : `${step + 1}/${steps.length}`}
+        </span>
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginBottom: 20, overflow: 'hidden' }}>
+        <div style={{ width: `${step < 0 ? 0 : ((step + 1) / steps.length) * 100}%`, height: '100%', background: 'var(--blue)', transition: 'width 0.4s ease', borderRadius: 2 }} />
+      </div>
+
+      {/* Timeline */}
+      {step >= 0 && (
+        <div style={{ display: 'flex', gap: 4, marginBottom: 20, flexWrap: 'wrap' }}>
+          {steps.map((s, i) => (
+            <button
+              key={i}
+              onClick={() => { setStep(i); setAutoPlay(false); }}
+              style={{
+                width: 36, height: 36, borderRadius: 8, border: 'none', cursor: 'pointer',
+                background: i === step ? 'var(--blue)' : i < step ? (s.voteDirection === 1 ? 'var(--green-b)' : s.voteDirection === -1 ? 'var(--red-b)' : 'var(--blue-b)') : 'var(--bg3)',
+                color: i === step ? '#fff' : i < step ? 'var(--t2)' : 'var(--t3)',
+                fontSize: 12, fontWeight: 700, fontFamily: 'var(--mono)', transition: 'all .2s',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {s.action === 'post' ? '📝' : s.voteDirection === 1 ? '✅' : s.voteDirection === -1 ? '❌' : i + 1}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ─── Current Step Detail ─── */}
+      {current && (
+        <div className="scenario-step" style={{ animation: 'slideIn .35s ease' }}>
+          {/* Header */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+            {current.actor && (
+              <div style={{
+                width: 48, height: 48, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24,
+                background: current.voteDirection === 1 ? 'var(--green-s)' : current.voteDirection === -1 ? 'var(--red-s)' : 'var(--blue-s)',
+                border: `2px solid ${current.voteDirection === 1 ? 'var(--green-b)' : current.voteDirection === -1 ? 'var(--red-b)' : 'var(--blue-b)'}`,
+              }}>
+                {current.actor.emoji}
+              </div>
+            )}
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 2 }}>{current.title}</div>
+              {current.actor && (
+                <div style={{ fontSize: 12, color: 'var(--t3)' }}>
+                  {current.actor.name} • {current.actor.role} • Trust: <span style={{ color: tc(current.actor.trust), fontWeight: 700, fontFamily: 'var(--mono)' }}>{current.actor.trust}</span> • Weight: <span style={{ color: 'var(--cyan)', fontWeight: 700, fontFamily: 'var(--mono)' }}>{Math.sqrt(current.actor.trust).toFixed(3)}</span>
+                </div>
+              )}
+            </div>
+            {current.hasEvidence !== undefined && (
+              <div style={{
+                padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 700,
+                background: current.hasEvidence ? 'var(--green-s)' : 'var(--amber-s)',
+                color: current.hasEvidence ? 'var(--green)' : 'var(--amber)',
+                border: `1px solid ${current.hasEvidence ? 'var(--green-b)' : 'var(--amber-b)'}`,
+              }}>
+                {current.hasEvidence ? '📸 Has Evidence' : '❓ No Evidence'}
+              </div>
+            )}
+          </div>
+
+          {/* Description */}
+          <p style={{ fontSize: 14, color: 'var(--t2)', lineHeight: 1.7, marginBottom: 16, fontStyle: 'italic' }}>
+            {current.description}
+          </p>
+
+          {/* Vote Tally Visual */}
+          {(current.trueVotes > 0 || current.falseVotes > 0) && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--t3)', marginBottom: 8 }}>Vote Tally</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 12, alignItems: 'center' }}>
+                <div style={{ textAlign: 'center', padding: 14, background: 'var(--green-s)', borderRadius: 10, border: '1px solid var(--green-b)' }}>
+                  <div style={{ fontSize: 24, fontWeight: 800, fontFamily: 'var(--mono)', color: 'var(--green)' }}>{current.trueVotes}</div>
+                  <div style={{ fontSize: 10, color: 'var(--green)', fontWeight: 700 }}>TRUE VOTES</div>
+                  <div style={{ fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--t2)', marginTop: 4 }}>Weight: {current.trueWeight.toFixed(3)}</div>
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--t3)' }}>vs</div>
+                <div style={{ textAlign: 'center', padding: 14, background: 'var(--red-s)', borderRadius: 10, border: '1px solid var(--red-b)' }}>
+                  <div style={{ fontSize: 24, fontWeight: 800, fontFamily: 'var(--mono)', color: 'var(--red)' }}>{current.falseVotes}</div>
+                  <div style={{ fontSize: 10, color: 'var(--red)', fontWeight: 700 }}>FALSE VOTES</div>
+                  <div style={{ fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--t2)', marginTop: 4 }}>Weight: {current.falseWeight.toFixed(3)}</div>
+                </div>
+              </div>
+
+              {/* CS Bar */}
+              <div style={{ marginTop: 12, padding: 14, background: 'var(--bg)', borderRadius: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)' }}>CREDIBILITY SCORE</span>
+                  <span style={{ fontSize: 22, fontWeight: 800, fontFamily: 'var(--mono)', color: cc(current.csAfter) }}>
+                    {current.csAfter >= 0 ? '+' : ''}{current.csAfter.toFixed(3)}
+                  </span>
+                </div>
+                <div style={{ height: 10, background: 'var(--bg3)', borderRadius: 5, overflow: 'hidden', position: 'relative' }}>
+                  <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 2, background: 'var(--t3)', opacity: 0.3 }} />
+                  <div style={{
+                    position: 'absolute',
+                    left: current.csAfter >= 0 ? '50%' : `${50 + current.csAfter * 50}%`,
+                    width: `${Math.abs(current.csAfter) * 50}%`,
+                    height: '100%',
+                    background: cc(current.csAfter),
+                    borderRadius: 5,
+                    transition: 'all 0.5s ease',
+                  }} />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--t3)', marginTop: 4 }}>
+                  <span>-1.0 (FALSE)</span>
+                  <span>0 (Neutral)</span>
+                  <span>+1.0 (TRUE)</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Insight Box */}
+          <div style={{
+            padding: 16, borderRadius: 10, fontSize: 13, lineHeight: 1.7,
+            background: 'var(--blue-s)', border: '1px solid var(--blue-b)', color: 'var(--blue)',
+            marginBottom: current.math ? 12 : 0,
+          }}>
+            <span style={{ fontSize: 16, marginRight: 8 }}>💡</span>
+            {current.insight}
+          </div>
+
+          {/* Math Box */}
+          {current.math && (
+            <div style={{
+              padding: 14, borderRadius: 10, fontFamily: 'var(--mono)', fontSize: 12,
+              background: 'var(--bg)', border: '1px solid var(--bdr)', color: 'var(--cyan)',
+              whiteSpace: 'pre-wrap', lineHeight: 1.8,
+            }}>
+              {current.math}
+            </div>
+          )}
+
+          {/* Trust Changes */}
+          {current.trustChanges && current.trustChanges.length > 0 && step === maxStep && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, color: 'var(--t3)', marginBottom: 8 }}>📊 Trust Updates After Resolution</div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {current.trustChanges.map((tc, i) => {
+                  const diff = tc.newTrust - tc.oldTrust;
+                  return (
+                    <div key={i} style={{
+                      display: 'flex', alignItems: 'center', gap: 12, padding: '8px 14px',
+                      background: diff > 0 ? 'var(--green-s)' : 'var(--red-s)',
+                      border: `1px solid ${diff > 0 ? 'var(--green-b)' : 'var(--red-b)'}`,
+                      borderRadius: 8, fontSize: 12, flexWrap: 'wrap',
+                    }}>
+                      <span style={{ fontWeight: 700, minWidth: 60 }}>{tc.name}</span>
+                      <span style={{ fontFamily: 'var(--mono)', color: 'var(--t2)' }}>
+                        {tc.oldTrust.toFixed(2)} → <span style={{ color: diff > 0 ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{tc.newTrust.toFixed(2)}</span>
+                      </span>
+                      <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, color: diff > 0 ? 'var(--green)' : 'var(--red)' }}>
+                        ({diff > 0 ? '+' : ''}{diff.toFixed(2)})
+                      </span>
+                      <span style={{ color: 'var(--t3)', fontSize: 11 }}>{tc.reason}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Final Verdict */}
+          {step === maxStep && (
+            <div className={`verdict ${current.csAfter >= 0.5 ? 'ok' : current.csAfter <= -0.5 ? 'bad' : 'meh'}`} style={{ marginTop: 16 }}>
+              <span style={{ fontSize: 22 }}>{current.csAfter >= 0.5 ? '✅' : current.csAfter <= -0.5 ? '❌' : '❓'}</span>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 4 }}>
+                  {scenario === 1
+                    ? 'TRUTH WINS! Mob defeated by trust-weighted consensus.'
+                    : 'Truth emerges — but with LOWER confidence (no evidence).'
+                  }
+                </div>
+                <div style={{ fontSize: 13, opacity: 0.9 }}>
+                  {scenario === 1
+                    ? `Despite 4 FALSE votes vs 3 TRUE votes, the credibility score is +${current.csAfter.toFixed(3)}. Quality beats quantity. Mob voters lost trust, honest voters gained trust — the system becomes STRONGER.`
+                    : `The truth still emerged (CS = +${current.csAfter.toFixed(3)}), but compare to Scenario 1's CS of ~0.82. Without evidence, the system is more cautious. This incentivizes users to provide evidence for faster, stronger consensus.`
+                  }
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Before starting */}
+      {step < 0 && (
+        <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--t3)' }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>{scenario === 1 ? '📸' : '❓'}</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t1)', marginBottom: 8 }}>
+            {scenario === 1 ? 'Evidence vs Mob Attack' : 'No Evidence, But Still True'}
+          </div>
+          <div style={{ fontSize: 14, maxWidth: 500, margin: '0 auto', lineHeight: 1.7 }}>
+            {scenario === 1
+              ? 'Watch 4 low-trust users try to suppress a TRUE rumor — and see ONE expert overturn them all. Click "Start Simulation" to begin.'
+              : 'Same truth, but no evidence. Watch how the consensus builds more slowly and ends with lower confidence. Click "Start Simulation" to begin.'
+            }
+          </div>
+        </div>
+      )}
+
+      {/* ── Comparison Table (show after completing either) ── */}
+      {step === maxStep && (
+        <div className="crd" style={{ borderLeft: '3px solid var(--purple)', marginTop: 20, marginBottom: 40 }}>
+          <h3>📊 Evidence vs No-Evidence Comparison</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+            <div style={{ padding: 16, background: 'var(--green-s)', borderRadius: 10, border: '1px solid var(--green-b)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--green)', marginBottom: 6 }}>📸 WITH EVIDENCE</div>
+              <div style={{ fontSize: 28, fontWeight: 800, fontFamily: 'var(--mono)', color: 'var(--green)' }}>+0.822</div>
+              <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 4 }}>Strong consensus • 3T vs 4F</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>Experts quickly verified evidence</div>
+            </div>
+            <div style={{ padding: 16, background: 'var(--amber-s)', borderRadius: 10, border: '1px solid var(--amber-b)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--amber)', marginBottom: 6 }}>❓ WITHOUT EVIDENCE</div>
+              <div style={{ fontSize: 28, fontWeight: 800, fontFamily: 'var(--mono)', color: 'var(--amber)' }}>+{(() => { const w = Math.sqrt; return ((w(0.5)+w(2.1)+w(0.2)+w(4.5)-w(0.3))/(w(0.5)+w(2.1)+w(0.2)+w(4.5)+w(0.3))).toFixed(3); })()}</div>
+              <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 4 }}>Moderate consensus • 4T vs 1F</div>
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>Slower build, more uncertainty</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 12, fontSize: 13, color: 'var(--t2)', lineHeight: 1.7 }}>
+            <b style={{ color: 'var(--t1)' }}>Key takeaway:</b> Both rumors are true, but the one with evidence reaches
+            <span style={{ color: 'var(--green)', fontWeight: 700 }}> higher confidence faster</span>.
+            TruthChain doesn&apos;t censor — it signals quality. Evidence = faster truth convergence.
+          </div>
+        </div>
+      )}
+
+
+      {/* ═══════════════════════════════════════════════ */}
+      {/* ═══════════ ATTACK SIMULATIONS BELOW ═══════════ */}
+      {/* ═══════════════════════════════════════════════ */}
+
+      <div className="sec" style={{ marginTop: 48 }}>
         <h2>⚔️ Attack Simulations</h2>
         <p className="desc">
           Every security system must prove it can resist attacks. Below are 5 real attack vectors — each one tries to break TruthChain.

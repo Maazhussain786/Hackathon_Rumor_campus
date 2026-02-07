@@ -181,6 +181,10 @@ body{font-family:'Inter',system-ui,-apple-system,sans-serif;background:var(--bg)
 .tab:hover{color:var(--t1)}
 .tab.active{background:var(--bg4);color:var(--t1);box-shadow:0 2px 8px rgba(0,0,0,.2)}
 
+/* ─── SCENARIO ─── */
+.scenario-step{padding:24px;background:var(--bg2);border:1px solid var(--bdr);border-radius:16px;margin-bottom:16px;transition:all .2s}
+.scenario-step:hover{border-color:var(--bdr2)}
+
 /* ─── FOOTER ─── */
 .foot{text-align:center;padding:40px 0;border-top:1px solid var(--bdr);color:var(--t3);font-size:12px;line-height:2}
 .foot b{color:var(--t2)}
