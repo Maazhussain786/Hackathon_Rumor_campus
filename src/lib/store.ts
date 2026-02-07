@@ -356,14 +356,16 @@ class TruthChainStore {
   }
 }
 
-// Singleton instance
-let storeInstance: TruthChainStore | null = null;
+// Singleton instance — use globalThis to survive Next.js hot module reloads
+// In dev mode, Next.js re-evaluates server modules on every change, which would
+// destroy the in-memory store. Attaching to globalThis preserves it.
+const globalForStore = globalThis as unknown as { __truthchain_store?: TruthChainStore };
 
 export function getStore(): TruthChainStore {
-  if (!storeInstance) {
-    storeInstance = new TruthChainStore();
+  if (!globalForStore.__truthchain_store) {
+    globalForStore.__truthchain_store = new TruthChainStore();
   }
-  return storeInstance;
+  return globalForStore.__truthchain_store;
 }
 
 export type { TruthChainStore };
