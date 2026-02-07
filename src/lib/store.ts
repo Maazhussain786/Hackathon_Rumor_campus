@@ -24,6 +24,7 @@ import {
   detectCollusionClusters,
   applyCollusionPenalties,
   generateDemoKeyPair,
+  generateSeededKeyPair,
   hashEmail,
   createDemoSignature,
   effectiveWeight,
@@ -63,7 +64,7 @@ class TruthChainStore {
     ];
 
     for (const profile of userProfiles) {
-      const { publicKeyHex, pseudonym } = generateDemoKeyPair();
+      const { publicKeyHex, pseudonym } = generateSeededKeyPair(profile.email);
       const eHash = hashEmail(profile.email);
       const user = createUser(pseudonym, publicKeyHex, eHash);
       user.trustScore = profile.trust;

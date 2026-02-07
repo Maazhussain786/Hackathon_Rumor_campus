@@ -60,3 +60,20 @@ export function generateDemoKeyPair(): {
     pseudonym: generatePseudonym(publicKeyHex),
   };
 }
+
+/**
+ * Generate a DETERMINISTIC key pair from a seed string.
+ * Used for seed users so pseudonyms are stable across server restarts.
+ */
+export function generateSeededKeyPair(seed: string): {
+  publicKeyHex: string;
+  pseudonym: string;
+} {
+  // Derive a deterministic "public key" from the seed
+  const hash = sha256(seed + '_TruthChain_KeyPair');
+  const publicKeyHex = '04' + hash + sha256(hash).substring(0, 64);
+  return {
+    publicKeyHex,
+    pseudonym: generatePseudonym(publicKeyHex),
+  };
+}
